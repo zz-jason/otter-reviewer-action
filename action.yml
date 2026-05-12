@@ -19,7 +19,7 @@ inputs:
     required: false
     default: "10"
   post-empty-review:
-    description: Post a visible review when Codex finds no actionable inline comments.
+    description: Post a visible review when the agent finds no actionable inline comments.
     required: false
     default: "true"
   dry-run:
@@ -39,11 +39,11 @@ inputs:
     required: false
     default: ""
   review-instructions:
-    description: Optional extra review instructions appended to the Codex prompt.
+    description: Optional extra review instructions appended to the agent prompt.
     required: false
     default: ""
   agent-command:
-    description: Optional executable for a custom review agent. It receives the review prompt on stdin and must output JSON matching schema/codex-review.schema.json. When omitted, Codex is used.
+    description: Optional executable for a custom review agent. It receives the review prompt on stdin and must output JSON matching schema/review.schema.json. When omitted, Codex is used.
     required: false
     default: ""
   agent-args-json:
@@ -62,6 +62,10 @@ inputs:
     description: Maximum PR diff bytes to send to the agent.
     required: false
     default: "250000"
+  allow-fork-prs:
+    description: Allow reviewing fork pull requests. Use only with isolated runners and no sensitive agent credentials.
+    required: false
+    default: "false"
   review-drafts:
     description: Review draft pull requests.
     required: false
@@ -73,12 +77,11 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Run Otter Reviewer
+    - name: Prepare Otter Reviewer payload
       shell: bash
       env:
-        OTTER_REVIEWER_APP_ID: ${{ inputs.app-id }}
-        OTTER_REVIEWER_PRIVATE_KEY: ${{ inputs.private-key }}
-        OTTER_REVIEWER_INSTALLATION_ID: ${{ inputs.installation-id }}
+        OTTER_REVIEW_PAYLOAD_PATH: ${{ runner.temp }}/otter-reviewer-payload.json
+        GITHUB_TOKEN: ${{ github.token }}
         OTTER_MAX_INLINE_COMMENTS: ${{ inputs.max-inline-comments }}
         OTTER_POST_EMPTY_REVIEW: ${{ inputs.post-empty-review }}
         OTTER_DRY_RUN: ${{ inputs.dry-run }}
@@ -91,6 +94,17 @@ runs:
         OTTER_AGENT_ENV_PASS: ${{ inputs.agent-env-pass }}
         OTTER_AGENT_TIMEOUT_SECONDS: ${{ inputs.agent-timeout-seconds }}
         OTTER_MAX_DIFF_BYTES: ${{ inputs.max-diff-bytes }}
+        OTTER_ALLOW_FORK_PRS: ${{ inputs.allow-fork-prs }}
         OTTER_REVIEW_DRAFTS: ${{ inputs.review-drafts }}
         OTTER_PR_NUMBER: ${{ inputs.pr-number }}
-      run: node "$GITHUB_ACTION_PATH/bin/otter-reviewer.js" review
+      run: node "$GITHUB_ACTION_PATH/bin/otter-reviewer.js" prepare
+
+    - name: Post Otter Reviewer review
+      shell: bash
+      env:
+        OTTER_REVIEW_PAYLOAD_PATH: ${{ runner.temp }}/otter-reviewer-payload.json
+        OTTER_REVIEWER_APP_ID: ${{ inputs.app-id }}
+        OTTER_REVIEWER_PRIVATE_KEY: ${{ inputs.private-key }}
+        OTTER_REVIEWER_INSTALLATION_ID: ${{ inputs.installation-id }}
+        OTTER_DRY_RUN: ${{ inputs.dry-run }}
+      run: node "$GITHUB_ACTION_PATH/bin/otter-reviewer.js" post

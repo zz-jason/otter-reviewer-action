@@ -4,13 +4,15 @@
 
 Otter Reviewer is designed for trusted self-hosted GitHub Actions runners. The safest default is a private repository, an ephemeral runner, and a runner group restricted to the repositories that should run reviews.
 
-Do not run this action on untrusted public fork pull requests unless you have a separate isolation design that prevents access to GitHub App private keys, Codex credentials, custom agent credentials, host files, and other repository secrets.
+Fork pull requests are refused by default, including manual `workflow_dispatch` reviews. Do not enable `allow-fork-prs` for untrusted public fork pull requests unless you have a separate isolation design that prevents access to GitHub App private keys, Codex credentials, custom agent credentials, host files, and other repository secrets.
 
 ## Secret Handling
 
 The action uses a GitHub App private key to create short-lived installation tokens for posting pull request reviews. Treat `OTTER_REVIEWER_PRIVATE_KEY` as a root credential for the installed repositories.
 
 The default Codex adapter passes only a minimal environment plus `CODEX_HOME` to the `codex` child process. Custom agents receive only a minimal environment plus variables explicitly listed in `agent-env-pass`.
+
+Custom agents are ordinary local processes. The action validates their JSON output and rejects worktree mutations, but it does not sandbox the custom agent process.
 
 ## Runner Guidance
 

@@ -9,6 +9,7 @@ const { spawnSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_API_URL = "https://api.github.com";
+const MAX_LOG_CHARS = 64 * 1024;
 
 function env(name, fallback = "") {
   const value = process.env[name];
@@ -37,6 +38,11 @@ function numberEnv(name, fallback) {
   return value;
 }
 
+function truncateForLog(text) {
+  if (!text || text.length <= MAX_LOG_CHARS) return text || "";
+  return `${text.slice(0, MAX_LOG_CHARS)}\n[output truncated]`;
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd || process.cwd(),
@@ -52,13 +58,13 @@ function run(command, args, options = {}) {
   }
 
   if (result.status !== 0) {
-    const stderr = result.stderr ? `\n${result.stderr}` : "";
-    const stdout = result.stdout ? `\n${result.stdout}` : "";
+    const stderr = result.stderr ? `\n${truncateForLog(result.stderr)}` : "";
+    const stdout = result.stdout ? `\n${truncateForLog(result.stdout)}` : "";
     throw new Error(`${command} ${args.join(" ")} failed with exit ${result.status}${stderr}${stdout}`);
   }
 
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.stdout) process.stdout.write(truncateForLog(result.stdout));
+  if (result.stderr) process.stderr.write(truncateForLog(result.stderr));
   return result.stdout || "";
 }
 
@@ -74,7 +80,7 @@ function capture(command, args, options = {}) {
 
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
+    throw new Error(`${command} ${args.join(" ")} failed: ${truncateForLog(result.stderr || result.stdout)}`);
   }
   return result.stdout.trim();
 }
@@ -102,11 +108,16 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
+function writeJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+}
+
 function extractJson(text) {
   try {
     return JSON.parse(text);
   } catch (_) {
-    // Codex should honor the schema, but keep this tolerant for older CLIs.
+    // Agents should honor the schema, but keep this tolerant for older CLIs.
   }
 
   const fenced = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
@@ -279,7 +290,50 @@ function normalizeComment(comment) {
   return { path: filePath, line, body };
 }
 
-function filterCodexReview(diffText, review, maxComments) {
+function assertOnlyKeys(value, allowed, pathName) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw new Error(`${pathName} contains unsupported field: ${key}`);
+    }
+  }
+}
+
+function validateReviewSchema(review) {
+  if (!review || typeof review !== "object" || Array.isArray(review)) {
+    throw new Error("Agent output must be a JSON object");
+  }
+  assertOnlyKeys(review, ["summary", "comments"], "Agent output");
+
+  if (typeof review.summary !== "string" || review.summary.length < 1 || review.summary.length > 12000) {
+    throw new Error("Agent output summary must be a string between 1 and 12000 characters");
+  }
+  if (!Array.isArray(review.comments) || review.comments.length > 20) {
+    throw new Error("Agent output comments must be an array with at most 20 comments");
+  }
+
+  for (const [index, comment] of review.comments.entries()) {
+    if (!comment || typeof comment !== "object" || Array.isArray(comment)) {
+      throw new Error(`Agent output comments[${index}] must be an object`);
+    }
+    assertOnlyKeys(comment, ["path", "line", "body", "severity"], `Agent output comments[${index}]`);
+    if (typeof comment.path !== "string" || comment.path.length < 1 || comment.path.length > 1000) {
+      throw new Error(`Agent output comments[${index}].path must be a string between 1 and 1000 characters`);
+    }
+    if (!Number.isInteger(comment.line) || comment.line < 1) {
+      throw new Error(`Agent output comments[${index}].line must be a positive integer`);
+    }
+    if (typeof comment.body !== "string" || comment.body.length < 1 || comment.body.length > 60000) {
+      throw new Error(`Agent output comments[${index}].body must be a string between 1 and 60000 characters`);
+    }
+    if (comment.severity !== undefined && !["high", "medium", "low"].includes(comment.severity)) {
+      throw new Error(`Agent output comments[${index}].severity must be high, medium, or low`);
+    }
+  }
+
+  return review;
+}
+
+function filterAgentReview(diffText, review, maxComments) {
   const allowed = parseAllowedLines(diffText);
   const rawComments = Array.isArray(review.comments) ? review.comments : [];
   const filtered = [];
@@ -307,7 +361,7 @@ function filterCodexReview(diffText, review, maxComments) {
 
   let summary = String(review.summary || "Otter Reviewer completed.").trim();
   if (dropped) {
-    summary += `\n\nFiltered out ${dropped} Codex comments that did not target valid RIGHT-side diff lines.`;
+    summary += `\n\nFiltered out ${dropped} agent comments that did not target valid RIGHT-side diff lines.`;
   }
 
   return {
@@ -315,6 +369,8 @@ function filterCodexReview(diffText, review, maxComments) {
     comments: filtered,
   };
 }
+
+const filterCodexReview = filterAgentReview;
 
 function getPullRequestContext(event) {
   const repository = requiredEnv("GITHUB_REPOSITORY");
@@ -397,6 +453,67 @@ function safeAgentEnv(extraNames) {
   return next;
 }
 
+function sensitiveEnvValues() {
+  const namePattern = /(TOKEN|SECRET|KEY|PASSWORD|PASS|PAT|AUTH|CREDENTIAL|PRIVATE)/i;
+  const values = new Set();
+  for (const [name, value] of Object.entries(process.env)) {
+    if (!namePattern.test(name) || typeof value !== "string" || value.length < 8) continue;
+    values.add(value);
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
+function redactText(text) {
+  let next = String(text || "");
+  for (const secret of sensitiveEnvValues()) {
+    next = next.split(secret).join("[redacted]");
+  }
+  return next
+    .replace(/github_pat_[A-Za-z0-9_]{20,}/g, "[redacted-github-token]")
+    .replace(/gh[pousr]_[A-Za-z0-9_]{20,}/g, "[redacted-github-token]")
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[redacted-private-key]");
+}
+
+function truncateText(text, maxLength) {
+  const value = String(text || "");
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 22).trim()}\n\n[content truncated]`;
+}
+
+function redactReview(review) {
+  return {
+    summary: truncateText(redactText(review.summary), 12000),
+    comments: review.comments.map((comment) => ({
+      ...comment,
+      body: truncateText(redactText(comment.body), 60000),
+    })),
+  };
+}
+
+function gitDir(repoRoot) {
+  return path.resolve(repoRoot, capture("git", ["rev-parse", "--git-dir"], { cwd: repoRoot }));
+}
+
+function fileDigest(file) {
+  if (!fs.existsSync(file)) return "";
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function unsetGitExtraHeaders(repoRoot) {
+  const result = spawnSync("git", ["config", "--local", "--get-regexp", "^http\\..*\\.extraheader$"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (result.status !== 0 || !result.stdout) return;
+
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const key = line.trim().split(/\s+/)[0];
+    if (key) {
+      spawnSync("git", ["config", "--local", "--unset-all", key], { cwd: repoRoot, encoding: "utf8" });
+    }
+  }
+}
+
 function runCodexAgent({ prompt, repoRoot, rawReviewPath, schemaPath, timeoutMs }) {
   const codexHome = env("OTTER_CODEX_HOME", env("CODEX_HOME", path.join(os.homedir(), ".codex")));
   const codexConfig = path.join(codexHome, "config.toml");
@@ -404,7 +521,7 @@ function runCodexAgent({ prompt, repoRoot, rawReviewPath, schemaPath, timeoutMs 
     throw new Error(`Codex config not found at ${codexConfig}`);
   }
 
-  const codexEnv = { ...safeAgentEnv(env("OTTER_AGENT_ENV_PASS").split(",")), CODEX_HOME: codexHome };
+  const codexEnv = { ...safeAgentEnv([]), CODEX_HOME: codexHome };
   const codexArgs = [
     "exec",
     "--cd",
@@ -433,12 +550,10 @@ function runCodexAgent({ prompt, repoRoot, rawReviewPath, schemaPath, timeoutMs 
   return fs.readFileSync(rawReviewPath, "utf8");
 }
 
-function assertCleanWorktree(repoRoot) {
-  try {
-    capture("git", ["diff", "--quiet"], { cwd: repoRoot });
-    capture("git", ["diff", "--cached", "--quiet"], { cwd: repoRoot });
-  } catch (_) {
-    throw new Error("Custom agent modified the git worktree; refusing to post review comments");
+function assertCleanWorktree(repoRoot, context = "after running custom agent") {
+  const status = capture("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: repoRoot });
+  if (status) {
+    throw new Error(`Git worktree is not clean ${context}; refusing to post review comments`);
   }
 }
 
@@ -464,6 +579,9 @@ function runCustomAgent({ prompt, repoRoot, rawReviewPath, schemaPath, promptPat
     OTTER_REVIEW_PROMPT_PATH: promptPath,
     OTTER_MAX_INLINE_COMMENTS: String(maxComments),
   };
+  assertCleanWorktree(repoRoot, "before running custom agent");
+  const gitConfigPath = path.join(gitDir(repoRoot), "config");
+  const gitConfigBefore = fileDigest(gitConfigPath);
   const stdout = capture(command, resolvedArgs, {
     cwd: repoRoot,
     env: agentEnv,
@@ -471,6 +589,9 @@ function runCustomAgent({ prompt, repoRoot, rawReviewPath, schemaPath, promptPat
     timeout: timeoutMs,
   });
   assertCleanWorktree(repoRoot);
+  if (fileDigest(gitConfigPath) !== gitConfigBefore) {
+    throw new Error("Custom agent modified git config; refusing to post review comments");
+  }
 
   if (fs.existsSync(rawReviewPath) && fs.statSync(rawReviewPath).size > 0) {
     return fs.readFileSync(rawReviewPath, "utf8");
@@ -486,21 +607,41 @@ function runReviewAgent({ prompt, repoRoot, rawReviewPath, schemaPath, promptPat
   return runCodexAgent({ prompt, repoRoot, rawReviewPath, schemaPath, timeoutMs });
 }
 
-async function runReview() {
+function payloadPath() {
+  return requiredEnv("OTTER_REVIEW_PAYLOAD_PATH");
+}
+
+function writeSkipPayload(reason) {
+  writeJson(payloadPath(), { skip: true, reason });
+  console.log(reason);
+}
+
+function rejectForkPrIfNeeded(pr, context) {
+  const headRepository = pr.head?.repo?.full_name || "";
+  if (headRepository && headRepository !== context.repository && !boolEnv("OTTER_ALLOW_FORK_PRS", false)) {
+    throw new Error(
+      `Refusing to review fork PR #${context.prNumber} from ${headRepository}. ` +
+        "Use allow-fork-prs only with an isolated runner and no sensitive agent credentials."
+    );
+  }
+}
+
+async function prepareReview() {
   const eventPath = env("GITHUB_EVENT_PATH");
   const event = eventPath && fs.existsSync(eventPath) ? readJson(eventPath) : {};
   const context = getPullRequestContext(event);
   if (!context.prNumber) {
-    console.log("No pull request number found; skipping Otter Reviewer.");
+    writeSkipPayload("No pull request number found; skipping Otter Reviewer.");
     return;
   }
 
   const apiUrl = env("GITHUB_API_URL", DEFAULT_API_URL);
-  const appToken = await createInstallationToken({ apiUrl, owner: context.owner, repo: context.repo });
+  const githubToken = requiredEnv("GITHUB_TOKEN");
+  const pr = await githubJson("GET", apiUrl, `/repos/${context.owner}/${context.repo}/pulls/${context.prNumber}`, githubToken);
+  rejectForkPrIfNeeded(pr, context);
 
-  const pr = await githubJson("GET", apiUrl, `/repos/${context.owner}/${context.repo}/pulls/${context.prNumber}`, appToken);
   if (pr.draft && !boolEnv("OTTER_REVIEW_DRAFTS", false)) {
-    console.log(`PR #${context.prNumber} is a draft; skipping Otter Reviewer.`);
+    writeSkipPayload(`PR #${context.prNumber} is a draft; skipping Otter Reviewer.`);
     return;
   }
 
@@ -510,6 +651,7 @@ async function runReview() {
 
   const repoRoot = capture("git", ["rev-parse", "--show-toplevel"]);
   process.chdir(repoRoot);
+  unsetGitExtraHeaders(repoRoot);
 
   run("git", ["fetch", "--no-tags", "--prune", "origin", `+refs/heads/${context.baseRef}:refs/remotes/origin/${context.baseRef}`], { cwd: repoRoot });
 
@@ -525,7 +667,7 @@ async function runReview() {
   const diffContext = env("OTTER_DIFF_CONTEXT", "80");
   const diffText = capture("git", ["diff", `--unified=${diffContext}`, "--find-renames", baseCommit, "HEAD"], { cwd: repoRoot });
   if (!diffText.trim()) {
-    console.log(`No diff found for PR #${context.prNumber}; skipping Otter Reviewer.`);
+    writeSkipPayload(`No diff found for PR #${context.prNumber}; skipping Otter Reviewer.`);
     return;
   }
   const maxDiffBytes = numberEnv("OTTER_MAX_DIFF_BYTES", 250000);
@@ -533,56 +675,100 @@ async function runReview() {
     throw new Error(`PR diff is too large for Otter Reviewer (${Buffer.byteLength(diffText, "utf8")} bytes > ${maxDiffBytes} bytes)`);
   }
 
-  const maxComments = Number(env("OTTER_MAX_INLINE_COMMENTS", "10"));
+  const maxComments = numberEnv("OTTER_MAX_INLINE_COMMENTS", 10);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "otter-reviewer-"));
-  const rawReviewPath = path.join(tempDir, "codex-review.raw.json");
+  const rawReviewPath = path.join(tempDir, "agent-review.raw.json");
   const promptPath = path.join(tempDir, "review-prompt.md");
-  const schemaPath = path.join(ROOT, "schema", "codex-review.schema.json");
-  const prompt = buildPrompt({ context, diffText, baseCommit, repoRoot, maxComments });
-  fs.writeFileSync(promptPath, prompt);
+  const schemaPath = path.join(ROOT, "schema", "review.schema.json");
+  try {
+    const prompt = buildPrompt({ context, diffText, baseCommit, repoRoot, maxComments });
+    fs.writeFileSync(promptPath, prompt, { mode: 0o600 });
 
-  const rawReview = extractJson(runReviewAgent({ prompt, repoRoot, rawReviewPath, schemaPath, promptPath, maxComments }));
-  const review = filterCodexReview(diffText, rawReview, maxComments);
-  const runUrl =
-    env("GITHUB_SERVER_URL") && env("GITHUB_RUN_ID")
-      ? `${env("GITHUB_SERVER_URL")}/${context.repository}/actions/runs/${env("GITHUB_RUN_ID")}`
-      : "";
+    const rawReview = validateReviewSchema(
+      extractJson(runReviewAgent({ prompt, repoRoot, rawReviewPath, schemaPath, promptPath, maxComments }))
+    );
+    const review = redactReview(filterAgentReview(diffText, rawReview, maxComments));
+    const runUrl =
+      env("GITHUB_SERVER_URL") && env("GITHUB_RUN_ID")
+        ? `${env("GITHUB_SERVER_URL")}/${context.repository}/actions/runs/${env("GITHUB_RUN_ID")}`
+        : "";
 
-  const body = ["Otter Reviewer", "", review.summary, runUrl ? `Run: ${runUrl}` : ""].filter(Boolean).join("\n");
-  const payload = {
-    commit_id: context.headSha,
-    event: "COMMENT",
-    body,
-    comments: review.comments.map((comment) => ({
-      path: comment.path,
-      line: comment.line,
-      side: "RIGHT",
-      body: comment.body,
-    })),
-  };
+    const body = ["Otter Reviewer", "", review.summary, runUrl ? `Run: ${runUrl}` : ""].filter(Boolean).join("\n");
+    const payload = {
+      commit_id: context.headSha,
+      event: "COMMENT",
+      body,
+      comments: review.comments.map((comment) => ({
+        path: comment.path,
+        line: comment.line,
+        side: "RIGHT",
+        body: comment.body,
+      })),
+    };
 
-  if (payload.comments.length === 0 && !boolEnv("OTTER_POST_EMPTY_REVIEW", true)) {
-    console.log("Codex produced no valid inline comments.");
+    if (payload.comments.length === 0 && !boolEnv("OTTER_POST_EMPTY_REVIEW", true)) {
+      writeSkipPayload("Agent produced no valid inline comments.");
+      return;
+    }
+
+    writeJson(payloadPath(), {
+      skip: false,
+      owner: context.owner,
+      repo: context.repo,
+      prNumber: context.prNumber,
+      payload,
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function postReview() {
+  const prepared = readJson(payloadPath());
+  if (prepared.skip) {
+    console.log(prepared.reason || "Otter Reviewer skipped.");
     return;
   }
 
   if (boolEnv("OTTER_DRY_RUN", false)) {
-    console.log(JSON.stringify(payload, null, 2));
+    console.log(JSON.stringify(prepared.payload, null, 2));
     return;
   }
 
-  await githubJson("POST", apiUrl, `/repos/${context.owner}/${context.repo}/pulls/${context.prNumber}/reviews`, appToken, payload);
-  console.log(`Posted Otter Reviewer review for PR #${context.prNumber} with ${payload.comments.length} inline comments.`);
+  const apiUrl = env("GITHUB_API_URL", DEFAULT_API_URL);
+  const appToken = await createInstallationToken({ apiUrl, owner: prepared.owner, repo: prepared.repo });
+  await githubJson(
+    "POST",
+    apiUrl,
+    `/repos/${prepared.owner}/${prepared.repo}/pulls/${prepared.prNumber}/reviews`,
+    appToken,
+    prepared.payload
+  );
+  console.log(
+    `Posted Otter Reviewer review for PR #${prepared.prNumber} with ${prepared.payload.comments.length} inline comments.`
+  );
 }
 
 async function main() {
   const command = process.argv[2];
-  if (command !== "review") {
-    console.error("Usage: otter-reviewer review");
+  if (command === "prepare") {
+    await prepareReview();
+    return;
+  }
+  if (command === "post") {
+    await postReview();
+    return;
+  }
+
+  if (command === "review") {
+    console.error("The single-process review command is disabled; use prepare followed by post.");
     process.exit(2);
   }
 
-  await runReview();
+  if (!["prepare", "post"].includes(command)) {
+    console.error("Usage: otter-reviewer prepare|post");
+    process.exit(2);
+  }
 }
 
 if (require.main === module) {
@@ -602,6 +788,7 @@ module.exports = {
   parseJsonArrayEnv,
   replacePlaceholders,
   safeAgentEnv,
+  validateReviewSchema,
   normalizePrivateKey,
   createAppJwt,
 };

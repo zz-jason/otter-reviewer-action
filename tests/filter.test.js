@@ -7,6 +7,7 @@ const {
   parseJsonArrayText,
   replacePlaceholders,
   safeAgentEnv,
+  validateReviewSchema,
 } = require("../bin/otter-reviewer");
 
 const diff = `diff --git a/src/server.js b/src/server.js
@@ -61,5 +62,11 @@ process.env.MY_AGENT_TOKEN = "allowed";
 const childEnv = safeAgentEnv(["MY_AGENT_TOKEN"]);
 assert.strictEqual(childEnv.MY_AGENT_TOKEN, "allowed");
 assert.strictEqual(childEnv.OTTER_REVIEWER_PRIVATE_KEY, undefined);
+
+assert.deepStrictEqual(validateReviewSchema({ summary: "ok", comments: [] }), { summary: "ok", comments: [] });
+assert.throws(
+  () => validateReviewSchema({ summary: "ok", comments: [{ path: "a.js", line: 1, body: "ok", extra: true }] }),
+  /unsupported field/
+);
 
 console.log("filter.test.js passed");

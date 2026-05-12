@@ -2,7 +2,7 @@
 
 Otter Reviewer runs an agent CLI on your self-hosted GitHub Actions runner, converts the agent output into GitHub inline pull request review comments, and posts those comments through your GitHub App identity.
 
-Codex is the default and end-to-end validated agent. You can also configure another review-capable CLI as long as it reads the review prompt and returns JSON matching `schema/codex-review.schema.json`.
+Codex is the default and end-to-end validated agent. You can also configure another review-capable CLI as long as it reads the review prompt and returns JSON matching `schema/review.schema.json`.
 
 ## Requirements
 
@@ -50,6 +50,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Run Otter Reviewer
@@ -63,7 +64,7 @@ jobs:
           pr-number: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
 ```
 
-Use a full release tag or commit SHA when you need stricter supply-chain pinning, for example `zz-jason/otter-reviewer-action@v1.0.0`.
+Use a full release tag or commit SHA when you need stricter supply-chain pinning, for example `zz-jason/otter-reviewer-action@v1.0.2`.
 
 ## Custom Agent CLI
 
@@ -97,7 +98,7 @@ To use a different CLI, provide `agent-command` and optional `agent-args-json`. 
 - `{promptPath}`
 - `{maxComments}`
 
-Custom agents do not receive the full workflow environment by default. Only a small safe environment is passed, plus variables explicitly listed in `agent-env-pass`.
+Custom agents do not receive the full workflow environment by default. Only a small safe environment is passed, plus variables explicitly listed in `agent-env-pass`. The default Codex adapter receives only the safe environment plus `CODEX_HOME`.
 
 ## Inputs
 
@@ -118,6 +119,7 @@ Custom agents do not receive the full workflow environment by default. Only a sm
 | `agent-env-pass` | no | `""` | Comma-separated environment variables to pass to a custom agent. |
 | `agent-timeout-seconds` | no | `900` | Agent timeout in seconds. |
 | `max-diff-bytes` | no | `250000` | Maximum diff size sent to the agent. |
+| `allow-fork-prs` | no | `false` | Allow reviewing fork pull requests. Use only with isolated runners and no sensitive agent credentials. |
 | `review-drafts` | no | `false` | Review draft pull requests. |
 | `pr-number` | no | `""` | Pull request number for manual dispatch or non-PR events. |
 
@@ -152,11 +154,12 @@ Use Otter Reviewer only with trusted self-hosted runner isolation. Do not expose
 Default guidance:
 
 - Prefer private repositories or trusted internal contributors.
-- Skip fork PRs unless you have a dedicated isolated runner design.
+- Fork PRs are refused by default, including manual `workflow_dispatch` reviews. Enable `allow-fork-prs` only with a dedicated isolated runner design.
 - Use ephemeral self-hosted runners and runner groups restricted to selected repositories.
 - Keep runner registration credentials out of the job environment.
 - Pin this action to `@v1`, a full release tag, or a commit SHA.
 - Treat PR diff content and `.otter-reviewer.md` as untrusted prompt input.
+- Custom agents are ordinary local processes. They are not sandboxed by this action.
 
 See `SECURITY.md` for the security model and reporting process.
 
