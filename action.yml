@@ -1,0 +1,96 @@
+name: Otter Reviewer
+description: Run an agent CLI on a self-hosted runner and post GitHub PR inline review comments as a GitHub App.
+branding:
+  icon: message-square
+  color: green
+inputs:
+  app-id:
+    description: GitHub App ID for the Otter Reviewer app.
+    required: true
+  private-key:
+    description: GitHub App private key in PEM form. Escaped newlines are accepted.
+    required: true
+  installation-id:
+    description: Optional GitHub App installation ID. If omitted, it is resolved from the current repository.
+    required: false
+    default: ""
+  max-inline-comments:
+    description: Maximum number of inline comments to post.
+    required: false
+    default: "10"
+  post-empty-review:
+    description: Post a visible review when Codex finds no actionable inline comments.
+    required: false
+    default: "true"
+  dry-run:
+    description: Print the GitHub review payload instead of posting it.
+    required: false
+    default: "false"
+  codex-home:
+    description: CODEX_HOME directory containing config.toml.
+    required: false
+    default: ""
+  codex-profile:
+    description: Optional Codex config profile.
+    required: false
+    default: ""
+  codex-model:
+    description: Optional Codex model override.
+    required: false
+    default: ""
+  review-instructions:
+    description: Optional extra review instructions appended to the Codex prompt.
+    required: false
+    default: ""
+  agent-command:
+    description: Optional executable for a custom review agent. It receives the review prompt on stdin and must output JSON matching schema/codex-review.schema.json. When omitted, Codex is used.
+    required: false
+    default: ""
+  agent-args-json:
+    description: JSON array of custom agent arguments. Supports {repoRoot}, {schemaPath}, {outputPath}, {promptPath}, and {maxComments} placeholders.
+    required: false
+    default: "[]"
+  agent-env-pass:
+    description: Comma-separated environment variable names to pass to a custom agent in addition to the default safe environment.
+    required: false
+    default: ""
+  agent-timeout-seconds:
+    description: Maximum seconds to wait for the agent CLI.
+    required: false
+    default: "900"
+  max-diff-bytes:
+    description: Maximum PR diff bytes to send to the agent.
+    required: false
+    default: "250000"
+  review-drafts:
+    description: Review draft pull requests.
+    required: false
+    default: "false"
+  pr-number:
+    description: Optional pull request number. Useful for workflow_dispatch and reusable workflow callers.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Run Otter Reviewer
+      shell: bash
+      env:
+        OTTER_REVIEWER_APP_ID: ${{ inputs.app-id }}
+        OTTER_REVIEWER_PRIVATE_KEY: ${{ inputs.private-key }}
+        OTTER_REVIEWER_INSTALLATION_ID: ${{ inputs.installation-id }}
+        OTTER_MAX_INLINE_COMMENTS: ${{ inputs.max-inline-comments }}
+        OTTER_POST_EMPTY_REVIEW: ${{ inputs.post-empty-review }}
+        OTTER_DRY_RUN: ${{ inputs.dry-run }}
+        OTTER_CODEX_HOME: ${{ inputs.codex-home }}
+        OTTER_CODEX_PROFILE: ${{ inputs.codex-profile }}
+        OTTER_CODEX_MODEL: ${{ inputs.codex-model }}
+        OTTER_REVIEW_INSTRUCTIONS: ${{ inputs.review-instructions }}
+        OTTER_AGENT_COMMAND: ${{ inputs.agent-command }}
+        OTTER_AGENT_ARGS_JSON: ${{ inputs.agent-args-json }}
+        OTTER_AGENT_ENV_PASS: ${{ inputs.agent-env-pass }}
+        OTTER_AGENT_TIMEOUT_SECONDS: ${{ inputs.agent-timeout-seconds }}
+        OTTER_MAX_DIFF_BYTES: ${{ inputs.max-diff-bytes }}
+        OTTER_REVIEW_DRAFTS: ${{ inputs.review-drafts }}
+        OTTER_PR_NUMBER: ${{ inputs.pr-number }}
+      run: node "$GITHUB_ACTION_PATH/bin/otter-reviewer.js" review

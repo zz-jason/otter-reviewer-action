@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "comments"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 12000,
+      "description": "Brief review summary for the pull request review body."
+    },
+    "comments": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "line", "body"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Repository-relative file path from the diff."
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "RIGHT-side line number in the PR diff."
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60000,
+            "description": "Inline review comment body."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["high", "medium", "low"]
+          }
+        }
+      }
+    }
+  }
+}

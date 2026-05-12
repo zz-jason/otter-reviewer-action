@@ -1,0 +1,10 @@
+node_modules/
+coverage/
+dist/
+actions-runner/
+_work/
+__pycache__/
+*.pyc
+*.tar.gz
+.env
+*.pem
