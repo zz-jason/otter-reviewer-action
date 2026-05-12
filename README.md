@@ -47,7 +47,7 @@ jobs:
     runs-on: [self-hosted, otter-reviewer]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
