@@ -64,7 +64,7 @@ jobs:
           pr-number: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
 ```
 
-Use a full release tag or commit SHA when you need stricter supply-chain pinning, for example `zz-jason/otter-reviewer-action@v1.0.2`.
+Use a full release tag or commit SHA when you need stricter supply-chain pinning, for example `zz-jason/otter-reviewer-action@v1.0.3`.
 
 ## Custom Agent CLI
 

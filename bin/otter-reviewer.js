@@ -514,6 +514,29 @@ function unsetGitExtraHeaders(repoRoot) {
   }
 }
 
+function gitFetch(repoRoot, args) {
+  const token = env("GITHUB_TOKEN");
+  const authArgs = token
+    ? [
+        "-c",
+        `http.https://github.com/.extraheader=AUTHORIZATION: basic ${Buffer.from(
+          `x-access-token:${token}`
+        ).toString("base64")}`,
+      ]
+    : [];
+  const result = spawnSync("git", [...authArgs, "fetch", ...args], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 100 * 1024 * 1024,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`git fetch failed with exit ${result.status}\n${truncateForLog(result.stderr || result.stdout)}`);
+  }
+  if (result.stdout) process.stdout.write(truncateForLog(result.stdout));
+  if (result.stderr) process.stderr.write(truncateForLog(result.stderr));
+}
+
 function runCodexAgent({ prompt, repoRoot, rawReviewPath, schemaPath, timeoutMs }) {
   const codexHome = env("OTTER_CODEX_HOME", env("CODEX_HOME", path.join(os.homedir(), ".codex")));
   const codexConfig = path.join(codexHome, "config.toml");
@@ -653,11 +676,11 @@ async function prepareReview() {
   process.chdir(repoRoot);
   unsetGitExtraHeaders(repoRoot);
 
-  run("git", ["fetch", "--no-tags", "--prune", "origin", `+refs/heads/${context.baseRef}:refs/remotes/origin/${context.baseRef}`], { cwd: repoRoot });
+  gitFetch(repoRoot, ["--no-tags", "--prune", "origin", `+refs/heads/${context.baseRef}:refs/remotes/origin/${context.baseRef}`]);
 
   const currentHead = capture("git", ["rev-parse", "HEAD"], { cwd: repoRoot });
   if (currentHead !== context.headSha) {
-    run("git", ["fetch", "--no-tags", "origin", `+refs/pull/${context.prNumber}/head:refs/remotes/origin/pr/${context.prNumber}`], { cwd: repoRoot });
+    gitFetch(repoRoot, ["--no-tags", "origin", `+refs/pull/${context.prNumber}/head:refs/remotes/origin/pr/${context.prNumber}`]);
     run("git", ["checkout", "--detach", `refs/remotes/origin/pr/${context.prNumber}`], { cwd: repoRoot });
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "otter-reviewer-action",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "GitHub Action that runs an agent CLI on a self-hosted runner and posts PR inline review comments as a GitHub App.",
   "bin": {
     "otter-reviewer": "bin/otter-reviewer.js"
